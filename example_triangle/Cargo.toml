@@ -1,0 +1,11 @@
+[package]
+name = "example_triangle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+glwindow = { path = "../glwindow" }
+
+[build-dependencies]
+gl_generator = "0.14"

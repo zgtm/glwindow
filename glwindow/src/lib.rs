@@ -1,15 +1,13 @@
 use std::error::Error;
-use std::ffi::{CStr, CString};
 use std::num::NonZeroU32;
-use std::ops::Deref;
 
 use raw_window_handle::HasWindowHandle;
 use winit::application::ApplicationHandler;
-use winit::event::{KeyEvent, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::EventLoop;
-use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowAttributes};
+use winit::window::{self, WindowAttributes, Icon, CursorGrabMode};
+use winit::dpi::PhysicalSize;
 
 use glutin::config::{Config, ConfigTemplateBuilder, GetGlConfig};
 use glutin::context::{
@@ -21,28 +19,11 @@ use glutin::surface::{Surface, SwapInterval, WindowSurface};
 
 use glutin_winit::{DisplayBuilder, GlWindow};
 
-pub mod gl {
-    #![allow(clippy::all)]
-    include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
+pub use glutin::display::GlDisplay;
+pub use winit::event;
+pub use winit::keyboard;
 
-    pub use Gles2 as Gl;
-}
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let event_loop = EventLoop::new().unwrap();
-
-    let template =
-        ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(cfg!(cgl_backend));
-
-    let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes()));
-
-    let mut app = App::new(template, display_builder);
-    event_loop.run_app(&mut app)?;
-
-    app.exit_state
-}
-
-impl ApplicationHandler for App {
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> ApplicationHandler for App<S,H,R> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let (window, gl_config) = match &self.gl_display {
             // We just created the event loop, so initialize the display, pick the config, and
@@ -53,15 +34,23 @@ impl ApplicationHandler for App {
                     self.template.clone(),
                     gl_config_picker,
                 ) {
-                    Ok((window, gl_config)) => (window.unwrap(), gl_config),
+                    Ok((window, gl_config)) => {
+                        let window = window.unwrap();
+                        window.set_cursor_visible(self.window_info.cursor_visible);
+                        if self.window_info.cursor_grabbed {
+                            window
+                                .set_cursor_grab(CursorGrabMode::Confined)
+                                .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Locked))
+                                .unwrap();
+                        }
+                        (window, gl_config)
+                    },
                     Err(err) => {
                         self.exit_state = Err(err);
                         event_loop.exit();
                         return;
                     },
                 };
-
-                println!("Picked a config with {} samples", gl_config.num_samples());
 
                 // Mark the display as initialized to not recreate it on resume, since the
                 // display is valid until we explicitly destroy it.
@@ -77,8 +66,17 @@ impl ApplicationHandler for App {
                 println!("Recreating window in `resumed`");
                 // Pick the config which we already use for the context.
                 let gl_config = self.gl_context.as_ref().unwrap().config();
-                match glutin_winit::finalize_window(event_loop, window_attributes(), &gl_config) {
-                    Ok(window) => (window, gl_config),
+                match glutin_winit::finalize_window(event_loop, window_attributes(&self.window_info), &gl_config) {
+                    Ok(window) => {
+                        window.set_cursor_visible(self.window_info.cursor_visible);
+                        if self.window_info.cursor_grabbed {
+                            window
+                                .set_cursor_grab(CursorGrabMode::Confined)
+                                .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Locked))
+                                .unwrap();
+                        }
+                        (window, gl_config)
+                    },
                     Err(err) => {
                         self.exit_state = Err(err.into());
                         event_loop.exit();
@@ -100,7 +98,7 @@ impl ApplicationHandler for App {
         let gl_context = self.gl_context.as_ref().unwrap();
         gl_context.make_current(&gl_surface).unwrap();
 
-        self.renderer.get_or_insert_with(|| Renderer::new(&gl_config.display()));
+        self.renderer.get_or_insert_with(|| R::new(&gl_config.display()));
 
         // Try setting vsync.
         if let Err(res) = gl_surface
@@ -109,7 +107,7 @@ impl ApplicationHandler for App {
             eprintln!("Error setting vsync: {res:?}");
         }
 
-        assert!(self.state.replace(AppState { gl_surface, window }).is_none());
+        assert!(self.gl_state.replace(GlState { gl_surface, window }).is_none());
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
@@ -119,7 +117,7 @@ impl ApplicationHandler for App {
 
         // Destroy the GL Surface and un-current the GL Context before ndk-glue releases
         // the window back to the system.
-        self.state = None;
+        self.gl_state = None;
 
         // Make context not current.
         self.gl_context = Some(
@@ -139,7 +137,7 @@ impl ApplicationHandler for App {
                 // Notable platforms here are Wayland and macOS, other don't require it
                 // and the function is no-op, but it's wise to resize it for portability
                 // reasons.
-                if let Some(AppState { gl_surface, window: _ }) = self.state.as_ref() {
+                if let Some(GlState { gl_surface, window: _ }) = self.gl_state.as_ref() {
                     let gl_context = self.gl_context.as_ref().unwrap();
                     gl_surface.resize(
                         gl_context,
@@ -147,16 +145,18 @@ impl ApplicationHandler for App {
                         NonZeroU32::new(size.height).unwrap(),
                     );
 
-                    let renderer = self.renderer.as_ref().unwrap();
+                    let renderer: &mut R = self.renderer.as_mut().unwrap();
                     renderer.resize(size.width as i32, size.height as i32);
                 }
             },
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), .. },
-                ..
-            } => event_loop.exit(),
-            _ => (),
+            event => match self.handler.handle_event(&mut self.app_state, event) {
+                Ok(AppControl::Continue) => (),
+                Ok(AppControl::Exit) => event_loop.exit(),
+                Err(e) => {
+                    self.exit_state = Err(e);
+                    event_loop.exit();
+                }
+            }
         }
     }
 
@@ -167,7 +167,7 @@ impl ApplicationHandler for App {
         let _gl_display = self.gl_context.take().unwrap().display();
 
         // Clear the window.
-        self.state = None;
+        self.gl_state = None;
         #[cfg(egl_backend)]
         #[allow(irrefutable_let_patterns)]
         if let glutin::display::Display::Egl(display) = _gl_display {
@@ -178,10 +178,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
+        if let Some(GlState { gl_surface, window }) = self.gl_state.as_ref() {
             let gl_context = self.gl_context.as_ref().unwrap();
             let renderer = self.renderer.as_ref().unwrap();
-            renderer.draw();
+            renderer.draw(&mut self.app_state);
             window.request_redraw();
 
             gl_surface.swap_buffers(gl_context).unwrap();
@@ -189,7 +189,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn create_gl_context(window: &Window, gl_config: &Config) -> NotCurrentContext {
+fn create_gl_context(window: &window::Window, gl_config: &Config) -> NotCurrentContext {
     let raw_window_handle = window.window_handle().ok().map(|wh| wh.as_raw());
 
     // The context creation part.
@@ -225,10 +225,19 @@ fn create_gl_context(window: &Window, gl_config: &Config) -> NotCurrentContext {
     }
 }
 
-fn window_attributes() -> WindowAttributes {
-    Window::default_attributes()
-        .with_transparent(true)
-        .with_title("Glutin triangle gradient example (press Escape to exit)")
+fn window_attributes(window_info: &WindowInformation) -> WindowAttributes {
+    let mut attr = window::Window::default_attributes()
+        .with_fullscreen(if window_info.fullscreen {Some(window::Fullscreen::Borderless(None))} else {None})
+        .with_resizable(window_info.resizable)
+        .with_transparent(window_info.transparent)
+        .with_title(&window_info.title)
+        .with_window_icon(window_info.icon.clone());
+
+    if let Some((x,y)) = window_info.size {
+        attr = attr.with_inner_size(PhysicalSize::new(x as u32,y as u32));
+    }
+
+    attr
 }
 
 enum GlDisplayCreationState {
@@ -238,34 +247,40 @@ enum GlDisplayCreationState {
     Init,
 }
 
-struct App {
+struct App<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> {
     template: ConfigTemplateBuilder,
-    renderer: Option<Renderer>,
-    // NOTE: `AppState` carries the `Window`, thus it should be dropped after everything else.
-    state: Option<AppState>,
+    renderer: Option<R>,
+    app_state: S,
+    handler: H,
+    window_info: WindowInformation,
+    // NOTE: `GlState` carries the `Window`, thus it should be dropped after everything else.
+    gl_state: Option<GlState>,
     gl_context: Option<PossiblyCurrentContext>,
     gl_display: GlDisplayCreationState,
     exit_state: Result<(), Box<dyn Error>>,
 }
 
-impl App {
-    fn new(template: ConfigTemplateBuilder, display_builder: DisplayBuilder) -> Self {
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> App<S,H,R> {
+    fn new(template: ConfigTemplateBuilder, window_info: WindowInformation, display_builder: DisplayBuilder, app_state: S, handler: H) -> Self {
         Self {
             template,
-            gl_display: GlDisplayCreationState::Builder(display_builder),
-            exit_state: Ok(()),
-            gl_context: None,
-            state: None,
+            app_state,
+            handler,
+            window_info,
             renderer: None,
+            gl_display: GlDisplayCreationState::Builder(display_builder),
+            gl_context: None,
+            gl_state: None,
+            exit_state: Ok(()),
         }
     }
 }
 
-struct AppState {
+struct GlState {
     gl_surface: Surface<WindowSurface>,
     // NOTE: Window should be dropped after all resources created using its
     // raw-window-handle.
-    window: Window,
+    window: window::Window,
 }
 
 // Find the config with the maximum number of samples, so our triangle will be
@@ -285,171 +300,127 @@ pub fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Confi
         .unwrap()
 }
 
-pub struct Renderer {
-    program: gl::types::GLuint,
-    vao: gl::types::GLuint,
-    vbo: gl::types::GLuint,
-    gl: gl::Gl,
+pub trait AppRenderer {
+    type AppState;
+
+    fn new<D: GlDisplay>(gl_display: &D) -> Self;
+    fn draw(&self, app_state: &mut Self::AppState);
+    fn resize(&mut self, _width: i32, _height: i32) {}
 }
 
-impl Renderer {
-    pub fn new<D: GlDisplay>(gl_display: &D) -> Self {
-        unsafe {
-            let gl = gl::Gl::load_with(|symbol| {
-                let symbol = CString::new(symbol).unwrap();
-                gl_display.get_proc_address(symbol.as_c_str()).cast()
-            });
+pub enum AppControl {
+    Continue,
+    Exit,
+}
 
-            if let Some(renderer) = get_gl_string(&gl, gl::RENDERER) {
-                println!("Running on {}", renderer.to_string_lossy());
-            }
-            if let Some(version) = get_gl_string(&gl, gl::VERSION) {
-                println!("OpenGL Version {}", version.to_string_lossy());
-            }
+pub trait AppEventHandler {
+    type AppState;
+    fn handle_event(&mut self, app_state: &mut Self::AppState, event: WindowEvent) -> Result<AppControl, Box<dyn Error>>;
+}
 
-            if let Some(shaders_version) = get_gl_string(&gl, gl::SHADING_LANGUAGE_VERSION) {
-                println!("Shaders version on {}", shaders_version.to_string_lossy());
-            }
+impl<S> AppEventHandler for fn(&mut S, WindowEvent) -> Result<AppControl, Box<dyn Error>>{
+    type AppState = S;
+    fn handle_event(&mut self, app_state: &mut Self::AppState, event: WindowEvent) -> Result<AppControl, Box<dyn Error>> {
+        self(app_state, event)
+    }
+}
 
-            let vertex_shader = create_shader(&gl, gl::VERTEX_SHADER, VERTEX_SHADER_SOURCE);
-            let fragment_shader = create_shader(&gl, gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE);
+pub type HandleFn<S> = for<'a> fn(&'a mut S, WindowEvent) -> Result<AppControl, Box<(dyn std::error::Error + 'static)>>;
 
-            let program = gl.CreateProgram();
+struct WindowInformation {
+    pub transparent: bool,
+    pub fullscreen: bool,
+    pub resizable: bool,
+    pub size: Option<(usize, usize)>,
+    pub title: String,
+    pub icon: Option<Icon>,
+    pub cursor_visible: bool,
+    pub cursor_grabbed: bool,
+}
 
-            gl.AttachShader(program, vertex_shader);
-            gl.AttachShader(program, fragment_shader);
+pub struct Window<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> {
+    window_info: WindowInformation,
+    _s: std::marker::PhantomData<S>,
+    _h: std::marker::PhantomData<H>,
+    _r: std::marker::PhantomData<R>,
+}
 
-            gl.LinkProgram(program);
-
-            gl.UseProgram(program);
-
-            gl.DeleteShader(vertex_shader);
-            gl.DeleteShader(fragment_shader);
-
-            let mut vao = std::mem::zeroed();
-            gl.GenVertexArrays(1, &mut vao);
-            gl.BindVertexArray(vao);
-
-            let mut vbo = std::mem::zeroed();
-            gl.GenBuffers(1, &mut vbo);
-            gl.BindBuffer(gl::ARRAY_BUFFER, vbo);
-            gl.BufferData(
-                gl::ARRAY_BUFFER,
-                (VERTEX_DATA.len() * std::mem::size_of::<f32>()) as gl::types::GLsizeiptr,
-                VERTEX_DATA.as_ptr() as *const _,
-                gl::STATIC_DRAW,
-            );
-
-            let pos_attrib = gl.GetAttribLocation(program, b"position\0".as_ptr() as *const _);
-            let color_attrib = gl.GetAttribLocation(program, b"color\0".as_ptr() as *const _);
-            gl.VertexAttribPointer(
-                pos_attrib as gl::types::GLuint,
-                2,
-                gl::FLOAT,
-                0,
-                5 * std::mem::size_of::<f32>() as gl::types::GLsizei,
-                std::ptr::null(),
-            );
-            gl.VertexAttribPointer(
-                color_attrib as gl::types::GLuint,
-                3,
-                gl::FLOAT,
-                0,
-                5 * std::mem::size_of::<f32>() as gl::types::GLsizei,
-                (2 * std::mem::size_of::<f32>()) as *const () as *const _,
-            );
-            gl.EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
-            gl.EnableVertexAttribArray(color_attrib as gl::types::GLuint);
-
-            Self { program, vao, vbo, gl }
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Window<S,H,R> {
+    pub fn new() -> Window<S,H,R> {
+        Window {
+            window_info: WindowInformation {
+                transparent: true,
+                fullscreen: false,
+                resizable: true,
+                size: None,
+                title: "".to_string(),
+                icon: None,
+                cursor_visible: true,
+                cursor_grabbed: false,
+            },
+            _s: std::marker::PhantomData,
+            _h: std::marker::PhantomData,
+            _r: std::marker::PhantomData,
         }
     }
 
-    pub fn draw(&self) {
-        unsafe {
-            self.gl.UseProgram(self.program);
-
-            self.gl.BindVertexArray(self.vao);
-            self.gl.BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-
-            self.gl.ClearColor(0.1, 0.1, 0.1, 0.9);
-            self.gl.Clear(gl::COLOR_BUFFER_BIT);
-            self.gl.DrawArrays(gl::TRIANGLES, 0, 3);
-        }
+    pub fn set_transparent(mut self, transparent: bool) -> Window<S,H,R> {
+        self.window_info.transparent = transparent;
+        self
     }
 
-    pub fn resize(&self, width: i32, height: i32) {
-        unsafe {
-            self.gl.Viewport(0, 0, width, height);
-        }
+    pub fn set_fullscreen(mut self, fullscreen: bool) -> Window<S,H,R> {
+        self.window_info.fullscreen = fullscreen;
+        self
+    }
+
+    pub fn set_resizable(mut self, resizable: bool) -> Window<S,H,R> {
+        self.window_info.resizable = resizable;
+        self
+    }
+
+    pub fn set_size(mut self, size: (usize, usize)) -> Window<S,H,R> {
+        self.window_info.size = Some(size);
+        self
+    }
+
+    pub fn set_title(mut self, title: &str) -> Window<S,H,R> {
+        self.window_info.title = title.to_string();
+        self
+    }
+
+    pub fn set_icon(mut self, data: &[u8], width: usize, height: usize) -> Window<S,H,R> {
+        self.window_info.icon = Some(Icon::from_rgba(data.to_vec(), width as u32, height as u32).unwrap());
+        self
+    }
+
+    pub fn set_cursor_visible(mut self, visible: bool) -> Window<S,H,R> {
+        self.window_info.cursor_visible = visible;
+        self
+    }
+
+    pub fn set_cursor_grabbed(mut self, grabbed: bool) -> Window<S,H,R> {
+        self.window_info.cursor_grabbed = grabbed;
+        self
+    }
+
+    pub fn run(self, state: S, handler: H) -> Result<(), Box<dyn Error>> {
+        let event_loop = EventLoop::new().unwrap();
+
+        let template =
+            ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(cfg!(cgl_backend));
+
+        let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes(&self.window_info)));
+
+        let mut app = App::<S,H,R>::new(template, self.window_info, display_builder, state, handler);
+        event_loop.run_app(&mut app)?;
+
+        app.exit_state
     }
 }
 
-impl Deref for Renderer {
-    type Target = gl::Gl;
-
-    fn deref(&self) -> &Self::Target {
-        &self.gl
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Default for Window<S,H,R> {
+    fn default() -> Self {
+        Self::new()
     }
 }
-
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        unsafe {
-            self.gl.DeleteProgram(self.program);
-            self.gl.DeleteBuffers(1, &self.vbo);
-            self.gl.DeleteVertexArrays(1, &self.vao);
-        }
-    }
-}
-
-unsafe fn create_shader(
-    gl: &gl::Gl,
-    shader: gl::types::GLenum,
-    source: &[u8],
-) -> gl::types::GLuint {
-    let shader = gl.CreateShader(shader);
-    gl.ShaderSource(shader, 1, [source.as_ptr().cast()].as_ptr(), std::ptr::null());
-    gl.CompileShader(shader);
-    shader
-}
-
-fn get_gl_string(gl: &gl::Gl, variant: gl::types::GLenum) -> Option<&'static CStr> {
-    unsafe {
-        let s = gl.GetString(variant);
-        (!s.is_null()).then(|| CStr::from_ptr(s.cast()))
-    }
-}
-
-#[rustfmt::skip]
-static VERTEX_DATA: [f32; 15] = [
-    -0.5, -0.5,  1.0,  0.0,  0.0,
-     0.0,  0.5,  0.0,  1.0,  0.0,
-     0.5, -0.5,  0.0,  0.0,  1.0,
-];
-
-const VERTEX_SHADER_SOURCE: &[u8] = b"
-#version 100
-precision mediump float;
-
-attribute vec2 position;
-attribute vec3 color;
-
-varying vec3 v_color;
-
-void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
-    v_color = color;
-}
-\0";
-
-const FRAGMENT_SHADER_SOURCE: &[u8] = b"
-#version 100
-precision mediump float;
-
-varying vec3 v_color;
-
-void main() {
-    gl_FragColor = vec4(v_color, 1.0);
-}
-\0";
