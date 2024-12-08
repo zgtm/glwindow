@@ -15,10 +15,8 @@ pub mod gl {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let window = glwindow::Window::<State, EventHandler, Renderer>::new();
-    window.set_title("glwindow example – press escape to quit")
-        .set_cursor_visible(false)
-        .set_cursor_grabbed(true)
+    glwindow::Window::<State, EventHandler, Renderer>::new()
+        .set_title("glwindow example – press escape to quit")
         .run(State{}, EventHandler{})
 }
 
