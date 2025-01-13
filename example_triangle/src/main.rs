@@ -2,15 +2,15 @@ use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::ops::Deref;
 
-use glwindow::AppControl;
+use glwindow::event::{KeyEvent, WindowEvent};
 use glwindow::gl;
-use glwindow::event::{WindowEvent, KeyEvent};
 use glwindow::keyboard::{Key, NamedKey};
+use glwindow::AppControl;
 
 fn main() -> Result<(), Box<dyn Error>> {
     glwindow::Window::<State, EventHandler, Renderer>::new()
         .set_title("glwindow example – press escape to quit")
-        .run(State{}, EventHandler{})
+        .run(State {}, EventHandler {})
 }
 
 pub struct State {}
@@ -20,19 +20,34 @@ pub struct EventHandler {}
 impl glwindow::AppEventHandler for EventHandler {
     type AppState = State;
 
-    fn handle_event(&mut self, _app_state: &mut State, event: glwindow::event::WindowEvent) -> Result<AppControl, Box<dyn Error>> {
+    fn handle_event(
+        &mut self,
+        _app_state: &mut State,
+        event: glwindow::event::WindowEvent,
+    ) -> Result<AppControl, Box<dyn Error>> {
         let mut exit = false;
         match event {
             WindowEvent::CloseRequested => {
                 exit = true;
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), .. }, .. } => {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        ..
+                    },
+                ..
+            } => {
                 exit = true;
             }
             _ => (),
         }
 
-        Ok(if exit { AppControl::Exit } else { AppControl::Continue })
+        Ok(if exit {
+            AppControl::Exit
+        } else {
+            AppControl::Continue
+        })
     }
 }
 
@@ -114,7 +129,12 @@ impl glwindow::AppRenderer for Renderer {
             gl.EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl.EnableVertexAttribArray(color_attrib as gl::types::GLuint);
 
-            Self {gl, vao, vbo, program}
+            Self {
+                gl,
+                vao,
+                vbo,
+                program,
+            }
         }
     }
 

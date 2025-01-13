@@ -3,11 +3,11 @@ use std::num::NonZeroU32;
 
 use raw_window_handle::HasWindowHandle;
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::EventLoop;
-use winit::window::{self, WindowAttributes, Icon, CursorGrabMode};
-use winit::dpi::PhysicalSize;
+use winit::window::{self, CursorGrabMode, Icon, WindowAttributes};
 
 use glutin::config::{Config, ConfigTemplateBuilder, GetGlConfig};
 use glutin::context::{
@@ -30,7 +30,9 @@ pub mod gl {
     pub use Gles2 as Gl;
 }
 
-impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> ApplicationHandler for App<S,H,R> {
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> ApplicationHandler
+    for App<S, H, R>
+{
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let (window, gl_config) = match &self.gl_display {
             // We just created the event loop, so initialize the display, pick the config, and
@@ -51,12 +53,12 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
                                 .unwrap();
                         }
                         (window, gl_config)
-                    },
+                    }
                     Err(err) => {
                         self.exit_state = Err(err);
                         event_loop.exit();
                         return;
-                    },
+                    }
                 };
 
                 // Mark the display as initialized to not recreate it on resume, since the
@@ -68,12 +70,16 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
                     Some(create_gl_context(&window, &gl_config).treat_as_possibly_current());
 
                 (window, gl_config)
-            },
+            }
             GlDisplayCreationState::Init => {
                 println!("Recreating window in `resumed`");
                 // Pick the config which we already use for the context.
                 let gl_config = self.gl_context.as_ref().unwrap().config();
-                match glutin_winit::finalize_window(event_loop, window_attributes(&self.window_info), &gl_config) {
+                match glutin_winit::finalize_window(
+                    event_loop,
+                    window_attributes(&self.window_info),
+                    &gl_config,
+                ) {
                     Ok(window) => {
                         window.set_cursor_visible(self.window_info.cursor_visible);
                         if self.window_info.cursor_grabbed {
@@ -83,21 +89,25 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
                                 .unwrap();
                         }
                         (window, gl_config)
-                    },
+                    }
                     Err(err) => {
                         self.exit_state = Err(err.into());
                         event_loop.exit();
                         return;
-                    },
+                    }
                 }
-            },
+            }
         };
 
         let attrs = window
             .build_surface_attributes(Default::default())
             .expect("Failed to build surface attributes");
-        let gl_surface =
-            unsafe { gl_config.display().create_window_surface(&gl_config, &attrs).unwrap() };
+        let gl_surface = unsafe {
+            gl_config
+                .display()
+                .create_window_surface(&gl_config, &attrs)
+                .unwrap()
+        };
 
         // The context needs to be current for the Renderer to set up shaders and
         // buffers. It also performs function loading, which needs a current context on
@@ -105,7 +115,8 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
         let gl_context = self.gl_context.as_ref().unwrap();
         gl_context.make_current(&gl_surface).unwrap();
 
-        self.renderer.get_or_insert_with(|| R::new(&gl_config.display()));
+        self.renderer
+            .get_or_insert_with(|| R::new(&gl_config.display()));
 
         // Try setting vsync.
         if let Err(res) = gl_surface
@@ -114,7 +125,10 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
             eprintln!("Error setting vsync: {res:?}");
         }
 
-        assert!(self.gl_state.replace(GlState { gl_surface, window }).is_none());
+        assert!(self
+            .gl_state
+            .replace(GlState { gl_surface, window })
+            .is_none());
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
@@ -128,7 +142,12 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
 
         // Make context not current.
         self.gl_context = Some(
-            self.gl_context.take().unwrap().make_not_current().unwrap().treat_as_possibly_current(),
+            self.gl_context
+                .take()
+                .unwrap()
+                .make_not_current()
+                .unwrap()
+                .treat_as_possibly_current(),
         );
     }
 
@@ -144,7 +163,11 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
                 // Notable platforms here are Wayland and macOS, other don't require it
                 // and the function is no-op, but it's wise to resize it for portability
                 // reasons.
-                if let Some(GlState { gl_surface, window: _ }) = self.gl_state.as_ref() {
+                if let Some(GlState {
+                    gl_surface,
+                    window: _,
+                }) = self.gl_state.as_ref()
+                {
                     let gl_context = self.gl_context.as_ref().unwrap();
                     gl_surface.resize(
                         gl_context,
@@ -155,7 +178,7 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
                     let renderer: &mut R = self.renderer.as_mut().unwrap();
                     renderer.resize(size.width as i32, size.height as i32);
                 }
-            },
+            }
             event => match self.handler.handle_event(&mut self.app_state, event) {
                 Ok(AppControl::Continue) => (),
                 Ok(AppControl::Exit) => event_loop.exit(),
@@ -163,7 +186,7 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
                     self.exit_state = Err(e);
                     event_loop.exit();
                 }
-            }
+            },
         }
     }
 
@@ -220,28 +243,34 @@ fn create_gl_context(window: &window::Window, gl_config: &Config) -> NotCurrentC
     let gl_display = gl_config.display();
 
     unsafe {
-        gl_display.create_context(gl_config, &context_attributes).unwrap_or_else(|_| {
-            gl_display.create_context(gl_config, &fallback_context_attributes).unwrap_or_else(
-                |_| {
-                    gl_display
-                        .create_context(gl_config, &legacy_context_attributes)
-                        .expect("failed to create context")
-                },
-            )
-        })
+        gl_display
+            .create_context(gl_config, &context_attributes)
+            .unwrap_or_else(|_| {
+                gl_display
+                    .create_context(gl_config, &fallback_context_attributes)
+                    .unwrap_or_else(|_| {
+                        gl_display
+                            .create_context(gl_config, &legacy_context_attributes)
+                            .expect("failed to create context")
+                    })
+            })
     }
 }
 
 fn window_attributes(window_info: &WindowInformation) -> WindowAttributes {
     let mut attr = window::Window::default_attributes()
-        .with_fullscreen(if window_info.fullscreen {Some(window::Fullscreen::Borderless(None))} else {None})
+        .with_fullscreen(if window_info.fullscreen {
+            Some(window::Fullscreen::Borderless(None))
+        } else {
+            None
+        })
         .with_resizable(window_info.resizable)
         .with_transparent(window_info.transparent)
         .with_title(&window_info.title)
         .with_window_icon(window_info.icon.clone());
 
-    if let Some((x,y)) = window_info.size {
-        attr = attr.with_inner_size(PhysicalSize::new(x as u32,y as u32));
+    if let Some((x, y)) = window_info.size {
+        attr = attr.with_inner_size(PhysicalSize::new(x as u32, y as u32));
     }
 
     attr
@@ -267,8 +296,14 @@ struct App<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> {
     exit_state: Result<(), Box<dyn Error>>,
 }
 
-impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> App<S,H,R> {
-    fn new(template: ConfigTemplateBuilder, window_info: WindowInformation, display_builder: DisplayBuilder, app_state: S, handler: H) -> Self {
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> App<S, H, R> {
+    fn new(
+        template: ConfigTemplateBuilder,
+        window_info: WindowInformation,
+        display_builder: DisplayBuilder,
+        app_state: S,
+        handler: H,
+    ) -> Self {
         Self {
             template,
             app_state,
@@ -322,17 +357,28 @@ pub enum AppControl {
 
 pub trait AppEventHandler {
     type AppState;
-    fn handle_event(&mut self, app_state: &mut Self::AppState, event: WindowEvent) -> Result<AppControl, Box<dyn Error>>;
+    fn handle_event(
+        &mut self,
+        app_state: &mut Self::AppState,
+        event: WindowEvent,
+    ) -> Result<AppControl, Box<dyn Error>>;
 }
 
-impl<S> AppEventHandler for fn(&mut S, WindowEvent) -> Result<AppControl, Box<dyn Error>>{
+impl<S> AppEventHandler for fn(&mut S, WindowEvent) -> Result<AppControl, Box<dyn Error>> {
     type AppState = S;
-    fn handle_event(&mut self, app_state: &mut Self::AppState, event: WindowEvent) -> Result<AppControl, Box<dyn Error>> {
+    fn handle_event(
+        &mut self,
+        app_state: &mut Self::AppState,
+        event: WindowEvent,
+    ) -> Result<AppControl, Box<dyn Error>> {
         self(app_state, event)
     }
 }
 
-pub type HandleFn<S> = for<'a> fn(&'a mut S, WindowEvent) -> Result<AppControl, Box<(dyn std::error::Error + 'static)>>;
+pub type HandleFn<S> = for<'a> fn(
+    &'a mut S,
+    WindowEvent,
+) -> Result<AppControl, Box<(dyn std::error::Error + 'static)>>;
 
 struct WindowInformation {
     pub transparent: bool,
@@ -352,8 +398,8 @@ pub struct Window<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState =
     _r: std::marker::PhantomData<R>,
 }
 
-impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Window<S,H,R> {
-    pub fn new() -> Window<S,H,R> {
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Window<S, H, R> {
+    pub fn new() -> Window<S, H, R> {
         Window {
             window_info: WindowInformation {
                 transparent: true,
@@ -371,42 +417,43 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Window<S
         }
     }
 
-    pub fn set_transparent(mut self, transparent: bool) -> Window<S,H,R> {
+    pub fn set_transparent(mut self, transparent: bool) -> Window<S, H, R> {
         self.window_info.transparent = transparent;
         self
     }
 
-    pub fn set_fullscreen(mut self, fullscreen: bool) -> Window<S,H,R> {
+    pub fn set_fullscreen(mut self, fullscreen: bool) -> Window<S, H, R> {
         self.window_info.fullscreen = fullscreen;
         self
     }
 
-    pub fn set_resizable(mut self, resizable: bool) -> Window<S,H,R> {
+    pub fn set_resizable(mut self, resizable: bool) -> Window<S, H, R> {
         self.window_info.resizable = resizable;
         self
     }
 
-    pub fn set_size(mut self, size: (usize, usize)) -> Window<S,H,R> {
+    pub fn set_size(mut self, size: (usize, usize)) -> Window<S, H, R> {
         self.window_info.size = Some(size);
         self
     }
 
-    pub fn set_title(mut self, title: &str) -> Window<S,H,R> {
+    pub fn set_title(mut self, title: &str) -> Window<S, H, R> {
         self.window_info.title = title.to_string();
         self
     }
 
-    pub fn set_icon(mut self, data: &[u8], width: usize, height: usize) -> Window<S,H,R> {
-        self.window_info.icon = Some(Icon::from_rgba(data.to_vec(), width as u32, height as u32).unwrap());
+    pub fn set_icon(mut self, data: &[u8], width: usize, height: usize) -> Window<S, H, R> {
+        self.window_info.icon =
+            Some(Icon::from_rgba(data.to_vec(), width as u32, height as u32).unwrap());
         self
     }
 
-    pub fn set_cursor_visible(mut self, visible: bool) -> Window<S,H,R> {
+    pub fn set_cursor_visible(mut self, visible: bool) -> Window<S, H, R> {
         self.window_info.cursor_visible = visible;
         self
     }
 
-    pub fn set_cursor_grabbed(mut self, grabbed: bool) -> Window<S,H,R> {
+    pub fn set_cursor_grabbed(mut self, grabbed: bool) -> Window<S, H, R> {
         self.window_info.cursor_grabbed = grabbed;
         self
     }
@@ -414,19 +461,24 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Window<S
     pub fn run(self, state: S, handler: H) -> Result<(), Box<dyn Error>> {
         let event_loop = EventLoop::new().unwrap();
 
-        let template =
-            ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(cfg!(cgl_backend));
+        let template = ConfigTemplateBuilder::new()
+            .with_alpha_size(8)
+            .with_transparency(cfg!(cgl_backend));
 
-        let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes(&self.window_info)));
+        let display_builder = DisplayBuilder::new()
+            .with_window_attributes(Some(window_attributes(&self.window_info)));
 
-        let mut app = App::<S,H,R>::new(template, self.window_info, display_builder, state, handler);
+        let mut app =
+            App::<S, H, R>::new(template, self.window_info, display_builder, state, handler);
         event_loop.run_app(&mut app)?;
 
         app.exit_state
     }
 }
 
-impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Default for Window<S,H,R> {
+impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Default
+    for Window<S, H, R>
+{
     fn default() -> Self {
         Self::new()
     }
