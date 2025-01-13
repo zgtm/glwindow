@@ -1,4 +1,9 @@
+use std::env;
+use std::fs::File;
+use std::path::PathBuf;
+
 use cfg_aliases::cfg_aliases;
+use gl_generator::{Api, Fallbacks, Profile, Registry, StructGenerator};
 
 fn main() {
     // Setup alias to reduce `cfg` boilerplate.
@@ -21,6 +26,13 @@ fn main() {
         wgl_backend: { all(feature = "wgl", windows, not(wasm_platform)) },
         cgl_backend: { all(macos_platform, not(wasm_platform)) },
     }
+
+    let dest = PathBuf::from(&env::var("OUT_DIR").unwrap());
+
+    let mut file = File::create(dest.join("gl_bindings.rs")).unwrap();
+    Registry::new(Api::Gles2, (4, 1), Profile::Core, Fallbacks::All, [])
+        .write_bindings(StructGenerator, &mut file)
+        .unwrap();
 
     println!("cargo:rerun-if-changed=build.rs");
 }

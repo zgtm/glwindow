@@ -23,6 +23,13 @@ pub use glutin::display::GlDisplay;
 pub use winit::event;
 pub use winit::keyboard;
 
+pub mod gl {
+    #![allow(clippy::all)]
+    include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
+
+    pub use Gles2 as Gl;
+}
+
 impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> ApplicationHandler for App<S,H,R> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let (window, gl_config) = match &self.gl_display {

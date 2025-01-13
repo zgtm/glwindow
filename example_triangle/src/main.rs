@@ -3,16 +3,9 @@ use std::ffi::{CStr, CString};
 use std::ops::Deref;
 
 use glwindow::AppControl;
-
+use glwindow::gl;
 use glwindow::event::{WindowEvent, KeyEvent};
 use glwindow::keyboard::{Key, NamedKey};
-
-pub mod gl {
-    #![allow(clippy::all)]
-    include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
-
-    pub use Gles2 as Gl;
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     glwindow::Window::<State, EventHandler, Renderer>::new()
@@ -44,10 +37,10 @@ impl glwindow::AppEventHandler for EventHandler {
 }
 
 pub struct Renderer {
-    program: gl::types::GLuint,
+    gl: gl::Gl,
     vao: gl::types::GLuint,
     vbo: gl::types::GLuint,
-    gl: gl::Gl,
+    program: gl::types::GLuint,
 }
 
 impl glwindow::AppRenderer for Renderer {
@@ -121,7 +114,7 @@ impl glwindow::AppRenderer for Renderer {
             gl.EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl.EnableVertexAttribArray(color_attrib as gl::types::GLuint);
 
-            Self { program, vao, vbo, gl }
+            Self {gl, vao, vbo, program}
         }
     }
 
