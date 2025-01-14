@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::ffi::CString;
 use std::num::NonZeroU32;
 
 use raw_window_handle::HasWindowHandle;
@@ -115,8 +116,16 @@ impl<S, H: AppEventHandler<AppState = S>, R: AppRenderer<AppState = S>> Applicat
         let gl_context = self.gl_context.as_ref().unwrap();
         gl_context.make_current(&gl_surface).unwrap();
 
-        self.renderer
-            .get_or_insert_with(|| R::new(&gl_config.display()));
+        self.renderer.get_or_insert_with(|| {
+            let gl = gl::Gl::load_with(|symbol| {
+                let symbol = CString::new(symbol).unwrap();
+                gl_config
+                    .display()
+                    .get_proc_address(symbol.as_c_str())
+                    .cast()
+            });
+            R::new(gl)
+        });
 
         // Try setting vsync.
         if let Err(res) = gl_surface
@@ -345,7 +354,7 @@ pub fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Confi
 pub trait AppRenderer {
     type AppState;
 
-    fn new<D: GlDisplay>(gl_display: &D) -> Self;
+    fn new(gl: gl::Gl) -> Self;
     fn draw(&self, app_state: &mut Self::AppState);
     fn resize(&mut self, _width: i32, _height: i32) {}
 }

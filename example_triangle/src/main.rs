@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::ops::Deref;
 
 use glwindow::event::{KeyEvent, WindowEvent};
@@ -61,13 +61,8 @@ pub struct Renderer {
 impl glwindow::AppRenderer for Renderer {
     type AppState = State;
 
-    fn new<D: glwindow::GlDisplay>(gl_display: &D) -> Self {
+    fn new(gl: gl::Gl) -> Self {
         unsafe {
-            let gl = gl::Gl::load_with(|symbol| {
-                let symbol = CString::new(symbol).unwrap();
-                gl_display.get_proc_address(symbol.as_c_str()).cast()
-            });
-
             if let Some(renderer) = get_gl_string(&gl, gl::RENDERER) {
                 println!("Running on {}", renderer.to_string_lossy());
             }
