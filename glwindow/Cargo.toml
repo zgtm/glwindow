@@ -1,6 +1,6 @@
 [package]
 name = "glwindow"
-version = "0.2.0"
+version = "0.2.0-dev"
 authors = ["Robert Czechowski <opengl@zgtm.eu>", "Kirill Chibisov <contact@kchibisov.com>"]
 description = "Create a minimal window for OpenGl with glutin"
 repository = "https://github.com/zgtm/glwindow"
